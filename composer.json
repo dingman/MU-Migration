@@ -21,5 +21,6 @@
   },
     "require-dev": {
         "behat/behat": "~2.5"
-    }
+    },
+  "abandoned": true
 }
