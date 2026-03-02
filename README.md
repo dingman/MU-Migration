@@ -2,7 +2,10 @@
 
 > This WP-CLI plugin makes the process of moving sites from single WordPress sites to a Multisite instance (or vice-versa) much easier.  It exports everything into a zip package which can be used to automatically import it within the desired Multisite installation.
 
-[![Build Status](https://travis-ci.org/10up/MU-Migration.svg?branch=master)](https://travis-ci.org/10up/MU-Migration) [![Support Level](https://img.shields.io/badge/support-stable-blue.svg)](#support-level) [![MIT License](https://img.shields.io/github/license/10up/MU-Migration.svg)](https://github.com/10up/MU-Migration/blob/master/LICENSE.md)
+[![Build Status](https://travis-ci.org/10up/MU-Migration.svg?branch=master)](https://travis-ci.org/10up/MU-Migration) [![Support Level](https://img.shields.io/badge/support-archived-red.svg)](#support-level) [![MIT License](https://img.shields.io/github/license/10up/MU-Migration.svg)](https://github.com/10up/MU-Migration/blob/master/LICENSE.md)
+
+> [!CAUTION]
+> As of 2 March 2026, this project is archived and no longer being actively maintained.
 
 ## Install
 
@@ -114,7 +117,7 @@ Depending of the codebase of the site you're migrating you may need to push some
 
 ## Support Level
 
-**Stable:** 10up is not planning to develop any new features for this, but will still respond to bug reports and security concerns. We welcome PRs, but any that include new features should be small and easy to integrate and should not include breaking changes. We otherwise intend to keep this tested up to the most recent version of WordPress.
+**Archived:** This project is no longer maintained by 10up. We are no longer responding to Issues or Pull Requests unless they relate to security concerns. We encourage interested developers to fork this project and make it their own!
 
 ## Credits
 
