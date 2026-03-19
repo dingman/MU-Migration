@@ -148,12 +148,13 @@ class ImportCommand extends MUMigrationBase {
 						//Inserts all custom meta data
 						foreach ( $user_meta_data as $meta_key => $meta_value ) {
 							if ( is_serialized( $meta_value ) ) {
-								$meta_value = unserialize( $meta_value );
-								// Skip objects that would crash map_deep() in update_user_meta
-								if ( is_object( $meta_value ) ) {
+								// Check for serialized objects (top-level or nested in arrays)
+								// that would crash map_deep() in update_user_meta
+								if ( preg_match( '/(?:^|[{;])O:\d+:"/', $meta_value ) ) {
 									\WP_CLI::warning( sprintf( 'Skipping meta key "%s" for user %s: contains serialized object', $meta_key, $user_data['user_login'] ) );
 									continue;
 								}
+								$meta_value = unserialize( $meta_value );
 							}
 							update_user_meta( $new_id, $meta_key, $meta_value );
 						}
