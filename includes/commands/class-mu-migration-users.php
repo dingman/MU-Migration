@@ -111,7 +111,8 @@ class UsersCommand extends MUMigrationBase {
 		$message .= '<' . network_site_url( "wp-login.php?action=rp&key=$key&login=" . rawurlencode( $user_login ), 'login' ) . ">\r\n";
 
 		if ( is_multisite() ) {
-			$blogname = $GLOBALS['current_site']->site_name;
+			// DEF-019: Replace deprecated $GLOBALS['current_site'] with get_network()
+			$blogname = get_network()->site_name;
 		} else {
 			/*
 			 * The blogname option is escaped with esc_html on the way into the database

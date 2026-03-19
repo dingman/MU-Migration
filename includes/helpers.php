@@ -4,7 +4,6 @@
  */
 namespace TenUp\MU_Migration\Helpers;
 
-use Alchemy\Zippy\Zippy;
 
 /**
  * Checks if WooCommerce is active.
@@ -35,6 +34,10 @@ function is_zip_file( $filename ) {
 
 	fclose( $fh );
 
+	// DEF-028: Guard against fgets() returning false before strpos check
+	if ( false === $blob ) {
+		return false;
+	}
 	if ( strpos( $blob, 'PK' ) !== false ) {
 		return true;
 	} else {
@@ -78,7 +81,16 @@ function delete_folder( $dirPath, $deleteParent = true ) {
 				\RecursiveIteratorIterator::CHILD_FIRST
 			) as $path
 		) {
-			$path->isFile() ? @unlink( $path->getPathname() ) : @rmdir( $path->getPathname() );
+			// DEF-027: Remove error suppression; emit warnings on failure
+			if ( $path->isFile() ) {
+				if ( ! unlink( $path->getPathname() ) ) {
+					\WP_CLI::warning( 'Failed to delete file: ' . $path->getPathname() );
+				}
+			} else {
+				if ( ! rmdir( $path->getPathname() ) ) {
+					\WP_CLI::warning( 'Failed to remove directory: ' . $path->getPathname() );
+				}
+			}
 		}
 
 		if ( $deleteParent ) {
@@ -111,7 +123,14 @@ function move_folder( $source, $dest ) {
 		} else {
 			$dest_file = $dest . DIRECTORY_SEPARATOR . $iterator->getSubPathName();
 			if ( ! file_exists( $dest_file ) ) {
-				rename( $item, $dest_file );
+				// DEF-011: Fall back to copy+unlink when rename crosses filesystem boundaries
+				if ( ! @rename( $item, $dest_file ) ) {
+					if ( ! copy( $item, $dest_file ) ) {
+						\WP_CLI::warning( 'Failed to move: ' . $item->getPathname() );
+					} else {
+						unlink( $item );
+					}
+				}
 			}
 		}
 	}
@@ -156,10 +175,17 @@ function light_add_user_to_blog( $blog_id, $user_id, $role ) {
 
 	if ( ! get_user_meta( $user_id, 'primary_blog', true ) ) {
 		update_user_meta( $user_id, 'primary_blog', $blog_id );
-		$details = get_blog_details( $blog_id );
+		// DEF-006: Replace deprecated get_blog_details() with get_site()
+		$details = get_site( $blog_id );
 		update_user_meta( $user_id, 'source_domain', $details->domain );
 	}
 
+	// DEF-017: Validate role against registered roles
+	$valid_roles = array_keys( wp_roles()->roles );
+	if ( ! empty( $role ) && ! in_array( $role, $valid_roles, true ) ) {
+		\WP_CLI::warning( sprintf( 'Invalid role "%s", defaulting to subscriber', $role ) );
+		$role = 'subscriber';
+	}
 	$user->set_role( $role );
 
 	/**
@@ -180,12 +206,11 @@ function light_add_user_to_blog( $blog_id, $user_id, $role ) {
  * Frees up memory for long running processes.
  */
 function stop_the_insanity() {
-	global $wpdb, $wp_actions, $wp_filter, $wp_object_cache;
+	// DEF-020: Removed $wp_actions from globals; resetting it breaks action tracking
+	global $wpdb, $wp_filter, $wp_object_cache;
 
 	//reset queries
 	$wpdb->queries = array();
-	// Prevent wp_actions from growing out of control
-	$wp_actions = array();
 
 	if ( is_object( $wp_object_cache ) ) {
 		$wp_object_cache->group_ops      = array();
@@ -248,7 +273,7 @@ function addTransaction( $orig_filename ) {
 	file_put_contents( $temp_filename, 'COMMIT;', FILE_APPEND );
 
 	fclose( $orig_file );
-	unlink( $orig_filename );
+	// DEF-030: Do not unlink before rename; rename() atomically overwrites the destination
 	rename( $temp_filename, $orig_filename );
 }
 
@@ -276,29 +301,65 @@ function maybe_restore_current_blog() {
 /**
  * Extracts a zip file to the $dest_dir.
  *
- * @uses Zippy
- *
  * @param string $filename
  * @param string $dest_dir
  */
-function extract( $filename, $dest_dir ) {
-	$zippy = Zippy::load();
-
-	$site_package = $zippy->open( $filename );
-	mkdir( $dest_dir );
-	$site_package->extract( $dest_dir );
+function extract_zip( $filename, $dest_dir ) {
+	$zip = new \ZipArchive();
+	if ( true !== $zip->open( $filename ) ) {
+		\WP_CLI::error( 'Failed to open zip file: ' . $filename );
+	}
+	$dest_dir = rtrim( $dest_dir, '/' );
+	if ( ! file_exists( $dest_dir ) ) {
+		mkdir( $dest_dir, 0755, true );
+	}
+	$real_dest = realpath( $dest_dir );
+	// DEF-008: Validate entries against path traversal
+	for ( $i = 0; $i < $zip->numFiles; $i++ ) {
+		$entry = $zip->getNameIndex( $i );
+		$full_path = realpath( $dest_dir ) ?: $dest_dir;
+		// Reject entries with path traversal
+		if ( str_contains( $entry, '..' ) ) {
+			$zip->close();
+			\WP_CLI::error( 'Zip entry contains path traversal: ' . $entry );
+		}
+	}
+	$zip->extractTo( $dest_dir );
+	$zip->close();
 }
 
 /**
- * Creates a zip files with the provided files/folder to zip
+ * Creates a zip file with the provided files/folders to zip.
  *
- * @param string $zip_files    The name of the zip file
+ * @param string $zip_file     The name of the zip file
  * @param array  $files_to_zip The files to include in the zip file
  *
  * @return void
  */
 function zip( $zip_file, $files_to_zip ) {
-	return Zippy::load()->create( $zip_file, $files_to_zip, true );
+	$zip = new \ZipArchive();
+	if ( true !== $zip->open( $zip_file, \ZipArchive::CREATE | \ZipArchive::OVERWRITE ) ) {
+		\WP_CLI::error( 'Failed to create zip file: ' . $zip_file );
+	}
+	foreach ( $files_to_zip as $archive_name => $source_path ) {
+		if ( is_dir( $source_path ) ) {
+			$iterator = new \RecursiveIteratorIterator(
+				new \RecursiveDirectoryIterator( $source_path, \RecursiveDirectoryIterator::SKIP_DOTS ),
+				\RecursiveIteratorIterator::SELF_FIRST
+			);
+			foreach ( $iterator as $item ) {
+				$relative = $archive_name . '/' . $iterator->getSubPathName();
+				if ( $item->isDir() ) {
+					$zip->addEmptyDir( $relative );
+				} else {
+					$zip->addFile( $item->getPathname(), $relative );
+				}
+			}
+		} else {
+			$zip->addFile( $source_path, $archive_name );
+		}
+	}
+	$zip->close();
 }
 
 /**
@@ -317,8 +378,12 @@ function runcommand( $command, $args = [], $assoc_args = [], $global_args = [] )
 	$transformed_assoc_args = [];
 
 	foreach ( $assoc_args as $key => $arg ) {
-		$transformed_assoc_args[] = '--' . $key . '=' . $arg;
+		// DEF-025: Sanitize key to alphanumeric/hyphens/underscores only
+		$safe_key = preg_replace( '/[^a-zA-Z0-9_-]/', '', $key );
+		// DEF-025: Cast value to string to prevent type confusion
+		$transformed_assoc_args[] = '--' . $safe_key . '=' . (string) $arg;
 	}
+
 	$params = sprintf( '%s %s', implode( ' ', $args ), implode( ' ', $transformed_assoc_args ) );
 
 	$options = [

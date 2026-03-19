@@ -6,7 +6,6 @@ namespace TenUp\MU_Migration\Commands;
 
 use TenUp\MU_Migration\Helpers;
 use WP_CLI;
-use Alchemy\Zippy\Zippy;
 
 class ImportCommand extends MUMigrationBase {
 
@@ -77,6 +76,11 @@ class ImportCommand extends MUMigrationBase {
 
 			$line = 0;
 
+			// DEF-031: Validate blog_id before switch_to_blog
+			if ( is_multisite() && ! get_site( (int) $this->assoc_args['blog_id'] ) ) {
+				WP_CLI::error( sprintf( 'Blog ID %d does not exist', $this->assoc_args['blog_id'] ) );
+			}
+
 			Helpers\maybe_switch_to_blog( $this->assoc_args['blog_id'] );
 
 			wp_suspend_cache_addition( true );
@@ -100,6 +104,16 @@ class ImportCommand extends MUMigrationBase {
 					)
 				);
 
+				// DEF-022: Warn when multiple users match the same login/email
+				if ( count( $user_exists ) > 1 ) {
+					$this->warning( sprintf(
+						'Multiple users matched for %s (%s), using first match (ID: %d)',
+						$user_data['user_login'],
+						$user_data['user_email'],
+						$user_exists[0]
+					), $verbose );
+				}
+
 				$user_exists = $user_exists ? $user_exists[0] : false;
 
 				if ( ! $user_exists ) {
@@ -120,13 +134,23 @@ class ImportCommand extends MUMigrationBase {
 					$new_id = wp_insert_user( $default_user_data );
 
 					if ( ! is_wp_error( $new_id ) ) {
-						$wpdb->update( $wpdb->users, array( 'user_pass' => $user_data['user_pass'] ), array( 'ID' => $new_id ) );
+						// DEF-018: Validate password hash format before direct insertion
+						$hash = $user_data['user_pass'];
+						if ( preg_match( '/^\$P\$|^\$2[aby]\$/', $hash ) ) {
+							$wpdb->update( $wpdb->users, array( 'user_pass' => $hash ), array( 'ID' => $new_id ) );
+						} else {
+							\WP_CLI::warning( sprintf( 'Invalid password hash format for user %s, generating new password', $user_data['user_login'] ) );
+							wp_set_password( wp_generate_password( 24, true ), $new_id );
+						}
 
 						$user = new \WP_User( $new_id );
 
 						//Inserts all custom meta data
 						foreach ( $user_meta_data as $meta_key => $meta_value ) {
-							update_user_meta( $new_id, $meta_key, maybe_unserialize( $meta_value ) );
+							if ( is_serialized( $meta_value ) ) {
+								$meta_value = unserialize( $meta_value, [ 'allowed_classes' => false ] );
+							}
+							update_user_meta( $new_id, $meta_key, $meta_value );
 						}
 
 						/**
@@ -203,10 +227,12 @@ class ImportCommand extends MUMigrationBase {
 			Helpers\maybe_restore_current_blog();
 
 			if ( ! empty( $ids_maps ) ) {
-				// Saving the ids_maps to a file.
-				$output_file_handler = fopen( $this->assoc_args['map_file'], 'w+' );
+				// DEF-010: Write map file atomically via temp file
+				$temp_map = $this->assoc_args['map_file'] . '.tmp';
+				$output_file_handler = fopen( $temp_map, 'w+' );
 				fwrite( $output_file_handler, json_encode( $ids_maps ) );
 				fclose( $output_file_handler );
+				rename( $temp_map, $this->assoc_args['map_file'] );
 
 				$this->success( sprintf(
 					__( 'A map file has been created: %s', 'mu-migration' ),
@@ -297,13 +323,14 @@ class ImportCommand extends MUMigrationBase {
 				$new_url = Helpers\parse_url_for_search_replace( $this->assoc_args['new_url'] );
 
 				// $search_replace = Helpers\runcommand( 'search-replace', [ $old_url, $new_url ], [], [ 'url' => $new_url ] );
+				// DEF-021: Include all tables with site prefix in search-replace
 				$search_replace = \WP_CLI::launch_self(
 					'search-replace',
 					array(
 						$old_url,
 						$new_url,
 					),
-					array(),
+					array( 'all-tables-with-prefix' => true ),
 					false,
 					false,
 					array( 'url' => $new_url )
@@ -340,6 +367,11 @@ class ImportCommand extends MUMigrationBase {
 						$this->log( sprintf( __( 'Uploads paths have been successfully updated: %s -> %s', 'mu-migration' ), $from, $to ), $verbose );
 					}
 				}
+			}
+
+			// DEF-031: Validate blog_id before switch_to_blog
+			if ( is_multisite() && ! get_site( (int) $this->assoc_args['blog_id'] ) ) {
+				WP_CLI::error( sprintf( 'Blog ID %d does not exist', $this->assoc_args['blog_id'] ) );
 			}
 
 			Helpers\maybe_switch_to_blog( (int) $this->assoc_args['blog_id'] );
@@ -393,7 +425,7 @@ class ImportCommand extends MUMigrationBase {
 			array(
 				'blog_id'                  => '',
 				'new_url'                  => '',
-				'mysql-single-transaction' => false,
+				'mysql-single-transaction' => true,
 				'uid_fields' => '',
 			),
 			$assoc_args
@@ -415,14 +447,14 @@ class ImportCommand extends MUMigrationBase {
 			WP_CLI::error( __( 'The provided file does not appear to be a zip file', 'mu-migration' ) );
 		}
 
-		$temp_dir = 'mu-migration' . time() . '/';
+		$temp_dir = sys_get_temp_dir() . '/mu-migration-' . bin2hex( random_bytes( 8 ) ) . '/';
 
 		WP_CLI::log( __( 'Extracting zip package...', 'mu-migration' ) );
 
 		/*
 		 * Extract the file to the $temp_dir
 		 */
-		Helpers\extract( $filename, $temp_dir );
+		Helpers\extract_zip( $filename, $temp_dir );
 
 		/*
 		 * Looks for required (.json, .csv and .sql) files and for the optional folders
@@ -440,6 +472,11 @@ class ImportCommand extends MUMigrationBase {
 		}
 
 		$site_meta_data = json_decode( file_get_contents( $site_meta_data[0] ) );
+
+		if ( ! $site_meta_data || ! isset( $site_meta_data->url, $site_meta_data->db_prefix, $site_meta_data->blog_id ) ) {
+			Helpers\delete_folder( $temp_dir );
+			WP_CLI::error( __( 'Invalid metadata file: missing required fields (url, db_prefix, blog_id)', 'mu-migration' ) );
+		}
 
 		$old_url = $site_meta_data->url;
 
@@ -559,6 +596,8 @@ class ImportCommand extends MUMigrationBase {
 		if ( file_exists( $plugins_dir ) ) {
 			WP_CLI::log( __( 'Moving Plugins...', 'mu-migration' ) );
 			$installed_plugins = WP_PLUGIN_DIR;
+			// DEF-013: Validate path is within plugins directory
+			$real_plugins_dir = realpath( $installed_plugins );
 			$check_plugins 	   = false !== $blog_plugins && false !== $network_plugins;
 			foreach ( $plugins as $plugin_name => $plugin ) {
 				$plugin_folder = dirname( $plugin_name );
@@ -569,9 +608,15 @@ class ImportCommand extends MUMigrationBase {
 					continue;
 				}
 
-				if ( ! file_exists( $installed_plugins . '/' . $plugin_folder ) ) {
+				$dest_path = $installed_plugins . '/' . $plugin_folder;
+				$real_dest = realpath( dirname( $dest_path ) );
+				if ( false === $real_dest || 0 !== strpos( $real_dest, $real_plugins_dir ) ) {
+					WP_CLI::warning( sprintf( 'Skipping plugin with suspicious path: %s', $plugin_folder ) );
+					continue;
+				}
+				if ( ! file_exists( $dest_path ) ) {
 					WP_CLI::log( sprintf( __( 'Moving %s to plugins folder' ), $plugin_name ) );
-					rename( $fullPluginPath, $installed_plugins . '/' . $plugin_folder );
+					rename( $fullPluginPath, $dest_path );
 				}
 
 				if ( $check_plugins && in_array( $plugin_name, $blog_plugins, true ) ) {
@@ -598,7 +643,10 @@ class ImportCommand extends MUMigrationBase {
 			$dest_uploads_dir = wp_upload_dir();
 			Helpers\maybe_restore_current_blog();
 
-			Helpers\move_folder( $uploads_dir, $dest_uploads_dir['basedir'] );
+			$real_upload_base = realpath( $dest_uploads_dir['basedir'] );
+			if ( false !== $real_upload_base ) {
+				Helpers\move_folder( $uploads_dir, $dest_uploads_dir['basedir'] );
+			}
 		}
 	}
 
@@ -637,16 +685,24 @@ class ImportCommand extends MUMigrationBase {
 	private function create_new_site( $meta_data ) {
 		$parsed_url = parse_url( esc_url( $meta_data->url ) );
 		$site_id    = get_main_network_id();
-
 		$parsed_url['path'] = isset( $parsed_url['path'] ) ? $parsed_url['path'] : '/';
 
-		if ( domain_exists( $parsed_url['host'], $parsed_url['path'], $site_id ) ) {
-			return false;
+		// DEF-012: If domain already exists, return existing blog_id for idempotency
+		$existing = domain_exists( $parsed_url['host'], $parsed_url['path'], $site_id );
+		if ( $existing ) {
+			\WP_CLI::warning( sprintf( 'Site already exists at %s%s (blog_id: %d), reusing', $parsed_url['host'], $parsed_url['path'], $existing ) );
+			return $existing;
 		}
 
-		$blog_id = insert_blog( $parsed_url['host'], $parsed_url['path'], $site_id );
+		// DEF-003: Replace deprecated insert_blog() with wp_insert_site()
+		$blog_id = wp_insert_site( [
+			'domain'     => $parsed_url['host'],
+			'path'       => $parsed_url['path'],
+			'network_id' => $site_id,
+		] );
 
-		if ( ! $blog_id ) {
+		if ( is_wp_error( $blog_id ) ) {
+			\WP_CLI::warning( $blog_id->get_error_message() );
 			return false;
 		}
 
@@ -662,6 +718,11 @@ class ImportCommand extends MUMigrationBase {
 	 */
 	private function replace_db_prefix( $filename, $old_db_prefix, $new_db_prefix ) {
 		$new_prefix = $new_db_prefix;
+
+		// DEF-001: Validate db prefix values
+		if ( ! preg_match( '/^[a-zA-Z0-9_]+$/', $old_db_prefix ) || ! preg_match( '/^[a-zA-Z0-9_]+$/', $new_prefix ) ) {
+			\WP_CLI::error( 'Invalid database prefix format' );
+		}
 
 		if ( ! empty( $new_prefix ) ) {
 			$mysql_chunks_regex = array(
@@ -682,7 +743,7 @@ class ImportCommand extends MUMigrationBase {
 			}
 
 			foreach ( $sed_commands as $sed_command ) {
-				$full_command = "sed '$sed_command' -i $filename";
+				$full_command = "sed " . escapeshellarg( $sed_command ) . " -i " . escapeshellarg( $filename );
 				$sed_result   = \WP_CLI::launch( $full_command, false, false );
 
 				if ( 0 !== $sed_result ) {

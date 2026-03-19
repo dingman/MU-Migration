@@ -115,6 +115,12 @@ abstract class MUMigrationBase extends \WP_CLI_Command {
 		$offset = 0;
 		$step   = 1000;
 
+		// DEF-026: Validate table name
+		$table_suffix = str_replace( $wpdb->prefix, '', $table );
+		if ( ! preg_match( '/^[a-zA-Z0-9_]+$/', $table_suffix ) ) {
+			WP_CLI::error( 'Invalid table name' );
+		}
+
 		$found_posts = $wpdb->get_col( "SELECT COUNT(ID) FROM {$table}" );
 
 		if ( ! $found_posts ) {

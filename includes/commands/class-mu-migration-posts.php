@@ -24,7 +24,7 @@ class PostsCommand extends MUMigrationBase {
 	 *
 	 *   wp mu-migration posts update_author map_users.json --blog_id=2 --uid_fields=_content_audit_owner
 	 *
-	 * @synopsis <inputfile> --blog_id=<blog_id> [--uid_fields=<uid_fields>]
+	 * @synopsis <inputfile> --blog_id=<blog_id> [--uid_fields=<uid_fields>] [--verbose]
 	 *
 	 * @param array $args
 	 * @param array $assoc_args
@@ -44,6 +44,10 @@ class PostsCommand extends MUMigrationBase {
 			),
 			$assoc_args
 		);
+
+		if ( isset( $assoc_args['verbose'] ) ) {
+			$verbose = true;
+		}
 
 		$filename = $this->args[0];
 

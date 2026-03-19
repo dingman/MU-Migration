@@ -5,7 +5,6 @@
 namespace TenUp\MU_Migration\Commands;
 
 use TenUp\MU_Migration\Helpers;
-use Alchemy\Zippy\Zippy;
 
 class ExportCommand extends MUMigrationBase {
 
@@ -439,14 +438,14 @@ class ExportCommand extends MUMigrationBase {
 			$tables_assoc_args['blog_id'] = (int) $this->assoc_args['blog_id'];
 		}
 
-		$rand = rand();
+		$rand = bin2hex( random_bytes( 8 ) );
 
 		/*
-		 * Adding rand() to the temporary file names to guarantee uniqueness.
+		 * Adding random bytes to the temporary file names to guarantee uniqueness.
 		 */
-		$users_file     = 'mu-migration-' . $rand . sanitize_title( $site_data['name'] ) . '.csv';
-		$tables_file    = 'mu-migration-' . $rand . sanitize_title( $site_data['name'] ) . '.sql';
-		$meta_data_file = 'mu-migration-' . $rand . sanitize_title( $site_data['name'] ) . '.json';
+		$users_file     = sys_get_temp_dir() . '/mu-migration-' . $rand . sanitize_title( $site_data['name'] ) . '.csv';
+		$tables_file    = sys_get_temp_dir() . '/mu-migration-' . $rand . sanitize_title( $site_data['name'] ) . '.sql';
+		$meta_data_file = sys_get_temp_dir() . '/mu-migration-' . $rand . sanitize_title( $site_data['name'] ) . '.json';
 
 		\WP_CLI::log( __( 'Exporting site meta data...', 'mu-migration' ) );
 		file_put_contents( $meta_data_file, wp_json_encode( $site_data ) );
@@ -467,9 +466,9 @@ class ExportCommand extends MUMigrationBase {
 		}
 
 		$files_to_zip = array(
-			$users_file     => $users_file,
-			$tables_file    => $tables_file,
-			$meta_data_file => $meta_data_file,
+			basename( $users_file )     => $users_file,
+			basename( $tables_file )    => $tables_file,
+			basename( $meta_data_file ) => $meta_data_file,
 		);
 
 		if ( $include_plugins ) {
