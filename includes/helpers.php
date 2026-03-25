@@ -348,6 +348,11 @@ function zip( $zip_file, $files_to_zip ) {
 				\RecursiveIteratorIterator::SELF_FIRST
 			);
 			foreach ( $iterator as $item ) {
+				$basename = $item->getBasename();
+				if ( false !== strpos( $basename, '..' ) ) {
+					\WP_CLI::warning( 'Skipping file with path traversal characters: ' . $item->getPathname() );
+					continue;
+				}
 				$relative = $archive_name . '/' . $iterator->getSubPathName();
 				if ( $item->isDir() ) {
 					$zip->addEmptyDir( $relative );
